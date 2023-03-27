@@ -1,0 +1,674 @@
+#ifndef Common_h
+#define Common_h
+
+#import <simd/simd.h>
+
+typedef struct {
+  matrix_float4x4 modelMatrix;
+  matrix_float4x4 viewMatrix;
+  matrix_float4x4 projectionMatrix;
+  matrix_float3x3 normalMatrix;
+  matrix_float4x4 shadowProjectionMatrix;
+  matrix_float4x4 shadowViewMatrix;
+} Uniforms;
+
+typedef struct {
+  uint width;
+  uint height;
+  uint tiling;
+  uint lightCount;
+  vector_float3 cameraPosition;
+} Params;
+
+typedef enum {
+  Position = 0,
+  Normal = 1,
+  UV = 2,
+  Color = 3,
+  Tangent = 4,
+  Bitangent = 5
+} Attributes;
+
+typedef enum {
+  VertexBuffer = 0,
+  UVBuffer = 1,
+  ColorBuffer = 2,
+  TangentBuffer = 3,
+  BitangentBuffer = 4,
+  UniformsBuffer = 11,
+  ParamsBuffer = 12,
+  LightBuffer = 13,
+  MaterialBuffer = 14
+} BufferIndices;
+
+typedef enum {
+  BaseColor = 0,
+  NormalTexture = 1,
+  RoughnessTexture = 2,
+  MetallicTexture = 3,
+  AOTexture = 4,
+  ShadowTexture = 5
+} TextureIndices;
+
+typedef enum {
+  unused = 0,
+  Sun = 1,
+  Spot = 2,
+  Point = 3,
+  Ambient = 4
+} LightType;
+
+typedef struct {
+  vector_float3 position;
+  vector_float3 color;
+  vector_float3 specularColor;
+  vector_float3 attenuation;
+  uint8_t type;
+  float coneAngle;
+  vector_float3 coneDirection;
+  float coneAttenuation;
+} Light;
+
+typedef struct {
+  vector_float3 baseColor;
+  vector_float3 specularColor;
+  float roughness;
+  float metallic;
+  float ambientOcclusion;
+  float shininess;
+} Material;
+
+typedef enum {
+  RenderTargetAlbedo = 1,
+  RenderTargetNormal = 2,
+  RenderTargetPosition = 3
+} RenderTarget;
+
+#endif /* Common_h */
+
+#ifndef Lighting_h
+#define Lighting_h
+
+float3 phongLighting(
+  float3 normal,
+  float3 position,
+  constant Params &params,
+  constant Light *lights,
+  Material material);
+
+float calculateShadow(
+  float4 shadowPosition,
+  depth2d<float> shadowTexture);
+
+float3 calculateSun(
+  Light light,
+  float3 normal,
+  Params params,
+  Material material);
+
+float3 calculatePoint(
+  Light light,
+  float3 position,
+  float3 normal,
+  Material material);
+
+float3 calculateSpot(
+  Light light,
+  float3 position,
+  float3 normal,
+  Material material);
+
+float calculateShadow(
+  float4 shadowPosition,
+  depth2d<float> shadowTexture);
+
+#endif /* Lighting_h */
+
+#ifndef VertexHeader_h
+#define VertexHeader_h
+
+struct VertexIn {
+  float4 position [[attribute(Position)]];
+  float3 normal [[attribute(Normal)]];
+  float2 uv [[attribute(UV)]];
+  float3 color [[attribute(Color)]];
+  float3 tangent [[attribute(Tangent)]];
+  float3 bitangent [[attribute(Bitangent)]];
+};
+
+struct VertexOut {
+  float4 position [[position]];
+  float2 uv;
+  float3 color;
+  float3 worldPosition;
+  float3 worldNormal;
+  float3 worldTangent;
+  float3 worldBitangent;
+  float4 shadowPosition;
+};
+
+#endif /* VertexHeader_h */
+
+#include <metal_stdlib>
+using namespace metal;
+
+constant float pi = 3.1415926535897932384626433832795;
+
+// functions
+float3 computeSpecular(
+  float3 normal,
+  float3 viewDirection,
+  float3 lightDirection,
+  float roughness,
+  float3 F0);
+
+float3 computeDiffuse(
+  Material material,
+  float3 normal,
+  float3 lightDirection);
+
+fragment float4 fragment_PBR(
+  VertexOut in [[stage_in]],
+  constant Params &params [[buffer(ParamsBuffer)]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  constant Material &_material [[buffer(MaterialBuffer)]],
+  texture2d<float> baseColorTexture [[texture(BaseColor)]],
+  texture2d<float> normalTexture [[texture(NormalTexture)]],
+  texture2d<float> roughnessTexture [[texture(RoughnessTexture)]],
+  texture2d<float> metallicTexture [[texture(MetallicTexture)]],
+  texture2d<float> aoTexture [[texture(AOTexture)]],
+  depth2d<float> shadowTexture [[texture(ShadowTexture)]])
+{
+  constexpr sampler textureSampler(
+    filter::linear,
+    address::repeat,
+    mip_filter::linear);
+
+  Material material = _material;
+
+  // extract color
+  if (!is_null_texture(baseColorTexture)) {
+    material.baseColor = baseColorTexture.sample(
+      textureSampler,
+      in.uv * params.tiling).rgb;
+  }
+  // extract metallic
+  if (!is_null_texture(metallicTexture)) {
+    material.metallic = metallicTexture.sample(textureSampler, in.uv).r;
+  }
+  // extract roughness
+  if (!is_null_texture(roughnessTexture)) {
+    material.roughness = roughnessTexture.sample(textureSampler, in.uv).r;
+  }
+  // extract ambient occlusion
+  if (!is_null_texture(aoTexture)) {
+    material.ambientOcclusion = aoTexture.sample(textureSampler, in.uv).r;
+  }
+
+  // normal map
+  float3 normal;
+  if (is_null_texture(normalTexture)) {
+    normal = in.worldNormal;
+  } else {
+    float3 normalValue = normalTexture.sample(
+      textureSampler,
+      in.uv * params.tiling).xyz * 2.0 - 1.0;
+    normal = float3x3(
+      in.worldTangent,
+      in.worldBitangent,
+      in.worldNormal) * normalValue;
+  }
+  normal = normalize(normal);
+
+  float3 viewDirection = normalize(params.cameraPosition);
+  float3 specularColor = 0;
+  float3 diffuseColor = 0;
+  for (uint i = 0; i < params.lightCount; i++) {
+    Light light = lights[i];
+    float3 lightDirection = normalize(light.position);
+    float3 F0 = mix(0.04, material.baseColor, material.metallic);
+
+    specularColor +=
+      saturate(computeSpecular(
+        normal,
+        viewDirection,
+        lightDirection,
+        material.roughness,
+        F0));
+
+    diffuseColor +=
+      saturate(computeDiffuse(
+        material,
+        normal,
+        lightDirection) * light.color);
+  }
+  // shadow calculation
+  diffuseColor *= calculateShadow(in.shadowPosition, shadowTexture);
+  return float4(diffuseColor + specularColor, 1);
+}
+
+float G1V(float nDotV, float k)
+{
+  return 1.0f / (nDotV * (1.0f - k) + k);
+}
+
+// specular optimized-ggx
+// AUTHOR John Hable. Released into the public domain
+float3 computeSpecular(
+    float3 normal,
+    float3 viewDirection,
+    float3 lightDirection,
+    float roughness,
+    float3 F0) {
+  float alpha = roughness * roughness;
+  float3 halfVector = normalize(viewDirection + lightDirection);
+  float nDotL = saturate(dot(normal, lightDirection));
+  float nDotV = saturate(dot(normal, viewDirection));
+  float nDotH = saturate(dot(normal, halfVector));
+  float lDotH = saturate(dot(lightDirection, halfVector));
+
+  float3 F;
+  float D, vis;
+
+  // Distribution
+  float alphaSqr = alpha * alpha;
+  float pi = 3.14159f;
+  float denom = nDotH * nDotH * (alphaSqr - 1.0) + 1.0f;
+  D = alphaSqr / (pi * denom * denom);
+
+  // Fresnel
+  float lDotH5 = pow(1.0 - lDotH, 5);
+  F = F0 + (1.0 - F0) * lDotH5;
+
+  // V
+  float k = alpha / 2.0f;
+  vis = G1V(nDotL, k) * G1V(nDotV, k);
+
+  float3 specular = nDotL * D * F * vis;
+  return specular;
+}
+
+// diffuse
+float3 computeDiffuse(
+  Material material,
+  float3 normal,
+  float3 lightDirection)
+{
+  float nDotL = saturate(dot(normal, lightDirection));
+  float3 diffuse = float3(((1.0/pi) * material.baseColor) * (1.0 - material.metallic));
+  diffuse = float3(material.baseColor) * (1.0 - material.metallic);
+  return diffuse * nDotL * material.ambientOcclusion;
+}
+
+struct GBufferOut {
+  float4 albedo [[color(RenderTargetAlbedo)]];
+  float4 normal [[color(RenderTargetNormal)]];
+  float4 position [[color(RenderTargetPosition)]];
+};
+
+// 1
+fragment GBufferOut fragment_gBuffer(
+  VertexOut in [[stage_in]],
+  depth2d<float> shadowTexture [[texture(ShadowTexture)]],
+  constant Material &material [[buffer(MaterialBuffer)]])
+{
+  GBufferOut out;
+  // 2
+  out.albedo = float4(material.baseColor, 1.0);
+  // 3
+  out.albedo.a = calculateShadow(in.shadowPosition, shadowTexture);
+  // 4
+  out.normal = float4(normalize(in.worldNormal), 1.0);
+  out.position = float4(in.worldPosition, 1.0);
+  return out;
+}
+
+constant float3 vertices[6] = {
+  float3(-1,  1,  0),    // triangle 1
+  float3( 1, -1,  0),
+  float3(-1, -1,  0),
+  float3(-1,  1,  0),    // triangle 2
+  float3( 1,  1,  0),
+  float3( 1, -1,  0)
+};
+
+vertex VertexOut vertex_quad(uint vertexID [[vertex_id]])
+{
+  VertexOut out {
+    .position = float4(vertices[vertexID], 1)
+  };
+  return out;
+}
+/*
+fragment float4 fragment_deferredSun(
+  VertexOut in [[stage_in]],
+  constant Params &params [[buffer(ParamsBuffer)]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  texture2d<float> albedoTexture [[texture(BaseColor)]],
+  texture2d<float> normalTexture [[texture(NormalTexture)]],
+  texture2d<float> positionTexture [[texture(NormalTexture + 1)]])
+{
+  uint2 coord = uint2(in.position.xy);
+  float4 albedo = albedoTexture.read(coord);
+  float3 normal = normalTexture.read(coord).xyz;
+  float3 position = positionTexture.read(coord).xyz;
+  Material material {
+    .baseColor = albedo.xyz,
+    .specularColor = float3(0),
+    .shininess = 500
+  };
+  float3 color = phongLighting(normal, position, params, lights, material);
+  color *= albedo.a;
+  return float4(color, 1);
+}
+*/
+struct PointLightIn {
+  float4 position [[attribute(Position)]];
+};
+
+struct PointLightOut {
+  float4 position [[position]];
+  uint instanceId [[flat]];
+};
+
+vertex PointLightOut vertex_pointLight(
+  PointLightIn in [[stage_in]],
+  constant Uniforms &uniforms [[buffer(UniformsBuffer)]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  // 1
+  uint instanceId [[instance_id]])
+{
+  // 2
+  float4 lightPosition = float4(lights[instanceId].position, 0);
+  float4 position =
+    uniforms.projectionMatrix * uniforms.viewMatrix
+  // 3
+    * (in.position + lightPosition);
+  PointLightOut out {
+    .position = position,
+    .instanceId = instanceId
+  };
+  return out;
+}
+
+fragment float4 fragment_pointLight(
+  PointLightOut in [[stage_in]],
+  texture2d<float> normalTexture [[texture(NormalTexture)]],
+  texture2d<float> positionTexture
+    [[texture(NormalTexture + 1)]],
+  constant Light *lights [[buffer(LightBuffer)]])
+{
+  Light light = lights[in.instanceId];
+  uint2 coords = uint2(in.position.xy);
+  float3 normal = normalTexture.read(coords).xyz;
+  float3 position = positionTexture.read(coords).xyz;
+
+  Material material {
+    .baseColor = 1
+  };
+  float3 lighting =
+    calculatePoint(light, position, normal, material);
+  lighting *= 0.5;
+  return float4(lighting, 1);
+}
+
+// MARK: - Tiling functions
+
+fragment float4 fragment_tiled_deferredSun(
+  VertexOut in [[stage_in]],
+  constant Params &params [[buffer(ParamsBuffer)]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  GBufferOut gBuffer)
+{
+  float4 albedo = gBuffer.albedo;
+  float3 normal = gBuffer.normal.xyz;
+  float3 position = gBuffer.position.xyz;
+  Material material {
+    .baseColor = albedo.xyz,
+    .specularColor = float3(0),
+    .shininess = 500
+  };
+
+  float3 color = phongLighting(normal, position, params, lights, material);
+
+  color *= albedo.a;
+  return float4(color, 1);
+}
+
+fragment float4 fragment_tiled_pointLight(
+  PointLightOut in [[stage_in]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  GBufferOut gBuffer)
+{
+  Light light = lights[in.instanceId];
+  float3 normal = gBuffer.normal.xyz;
+  float3 position = gBuffer.position.xyz;
+
+  Material material {
+    .baseColor = 1
+  };
+  float3 lighting =
+    calculatePoint(light, position, normal, material);
+  lighting *= 0.5;
+  return float4(lighting, 1);
+}
+
+float3 calculateSun(
+                    Light light,
+                    float3 normal,
+                    Params params,
+                    Material material)
+{
+  float3 diffuseColor = 0;
+  float3 specularColor = 0;
+  float3 lightDirection = normalize(-light.position);
+  float diffuseIntensity =
+    saturate(-dot(lightDirection, normal));
+  diffuseColor += light.color * material.baseColor * diffuseIntensity;
+  if (diffuseIntensity > 0) {
+    float3 reflection =
+        reflect(lightDirection, normal);
+    float3 viewDirection =
+        normalize(params.cameraPosition);
+    float specularIntensity =
+        pow(saturate(dot(reflection, viewDirection)),
+            material.shininess);
+    specularColor +=
+        light.specularColor * material.specularColor
+          * specularIntensity;
+  }
+  return diffuseColor + specularColor;
+}
+
+float3 calculatePoint(
+  Light light,
+  float3 position,
+  float3 normal,
+  Material material)
+{
+  float d = distance(light.position, position);
+  float3 lightDirection = normalize(light.position - position);
+  float attenuation = 1.0 / (light.attenuation.x +
+      light.attenuation.y * d + light.attenuation.z * d * d);
+
+  float diffuseIntensity =
+      saturate(dot(lightDirection, normal));
+  float3 color = light.color * material.baseColor * diffuseIntensity;
+  color *= attenuation;
+  return color;
+}
+
+float3 calculateSpot(
+  Light light,
+  float3 position,
+  float3 normal,
+  Material material)
+{
+  float d = distance(light.position, position);
+  float3 lightDirection = normalize(light.position - position);
+  float3 coneDirection = normalize(light.coneDirection);
+  float spotResult = dot(lightDirection, -coneDirection);
+  float3 color =  0;
+  if (spotResult > cos(light.coneAngle)) {
+    float attenuation = 1.0 / (light.attenuation.x +
+        light.attenuation.y * d + light.attenuation.z * d * d);
+    attenuation *= pow(spotResult, light.coneAttenuation);
+    float diffuseIntensity =
+             saturate(dot(lightDirection, normal));
+    color = light.color * material.baseColor * diffuseIntensity;
+    color *= attenuation;
+  }
+  return color;
+}
+
+float3 phongLighting(
+  float3 normal,
+  float3 position,
+  constant Params &params,
+  constant Light *lights,
+  Material material)
+{
+  float3 ambientColor = 0;
+  float3 accumulatedLighting = 0;
+  for (uint i = 0; i < params.lightCount; i++) {
+    Light light = lights[i];
+    switch (light.type) {
+      case Sun: {
+        accumulatedLighting += calculateSun(light, normal, params, material);
+        break;
+      }
+      case Point: {
+        accumulatedLighting += calculatePoint(light, position, normal, material);
+        break;
+      }
+      case Spot: {
+        accumulatedLighting += calculateSpot(light, position, normal, material);
+        break;
+      }
+      case Ambient: {
+        ambientColor += material.baseColor * light.color;
+        break;
+      }
+      case unused: {
+        break;
+      }
+    }
+  }
+  float3 color = accumulatedLighting + ambientColor;
+  return color;
+}
+
+float calculateShadow(
+  float4 shadowPosition,
+  depth2d<float> shadowTexture)
+{
+  // shadow calculation
+  float3 position
+    = shadowPosition.xyz / shadowPosition.w;
+  float2 xy = position.xy;
+  xy = xy * 0.5 + 0.5;
+  xy.y = 1 - xy.y;
+  constexpr sampler s(
+    coord::normalized, filter::nearest,
+    address::clamp_to_edge,
+    compare_func:: less);
+  float shadow_sample = shadowTexture.sample(s, xy);
+  return (position.z > shadow_sample + 0.001) ? 0.5 : 1;
+}
+
+vertex VertexOut vertex_main(
+  const VertexIn in [[stage_in]],
+  constant Uniforms &uniforms [[buffer(UniformsBuffer)]])
+{
+  float4 position =
+    uniforms.projectionMatrix * uniforms.viewMatrix
+    * uniforms.modelMatrix * in.position;
+  VertexOut out {
+    .position = position,
+    .uv = in.uv,
+    .color = in.color,
+    .worldPosition = (uniforms.modelMatrix * in.position).xyz,
+    .worldNormal = uniforms.normalMatrix * in.normal,
+    .worldTangent = uniforms.normalMatrix * in.tangent,
+    .worldBitangent = uniforms.normalMatrix * in.bitangent,
+    .shadowPosition =
+      uniforms.shadowProjectionMatrix * uniforms.shadowViewMatrix
+      * uniforms.modelMatrix * in.position
+  };
+  return out;
+}
+
+constant float lineWidth = 1.0;
+constant float3 lineColor = float3(0.7);
+float edgeFactor(float3 bary) {
+  float3 d = fwidth(bary);
+  float3 f = step(d * lineWidth, bary);
+  return min(min(f.x, f.y), f.z);
+}
+
+fragment float4 fragment_main(
+  constant Params &params [[buffer(ParamsBuffer)]],
+  constant Light *lights [[buffer(LightBuffer)]],
+  VertexOut in [[stage_in]],
+  constant Material &_material [[buffer(MaterialBuffer)]],
+  texture2d<float> baseColorTexture [[texture(BaseColor)]],
+  texture2d<float> normalTexture [[texture(NormalTexture)]],
+  depth2d<float> shadowTexture [[texture(ShadowTexture)]],
+                              float3 barycentric_coord [[barycentric_coord]])
+{
+  float3 d = fwidth(barycentric_coord);
+  float3 s = step(d * lineWidth, barycentric_coord);
+  return min(min(s.x, s.y), s.z);
+  return float4(min(edgeFactor(barycentric_coord), lineColor), 1.0);
+  constexpr sampler textureSampler(
+    filter::linear,
+    address::repeat,
+    mip_filter::linear,
+    max_anisotropy(8));
+
+  Material material = _material;
+  if (!is_null_texture(baseColorTexture)) {
+    material.baseColor = baseColorTexture.sample(
+    textureSampler,
+    in.uv * params.tiling).rgb;
+  }
+  float3 normal;
+  if (is_null_texture(normalTexture)) {
+    normal = in.worldNormal;
+  } else {
+    normal = normalTexture.sample(
+    textureSampler,
+    in.uv * params.tiling).rgb;
+    normal = normal * 2 - 1;
+    normal = float3x3(
+      in.worldTangent,
+      in.worldBitangent,
+      in.worldNormal) * normal;
+  }
+  normal = normalize(normal);
+
+  float3 color = phongLighting(
+    normal,
+    in.worldPosition,
+    params,
+    lights,
+    material
+  );
+  color *= calculateShadow(in.shadowPosition, shadowTexture);
+  return float4(color, 1);
+}
+
+
+struct VertexIn {
+  float4 position [[attribute(0)]];
+};
+
+vertex float4
+  vertex_depth(const VertexIn in [[stage_in]],
+  constant Uniforms &uniforms [[buffer(UniformsBuffer)]])
+{
+  matrix_float4x4 mvp =
+    uniforms.shadowProjectionMatrix * uniforms.shadowViewMatrix
+    * uniforms.modelMatrix;
+  return mvp * in.position;
+}
