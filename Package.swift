@@ -27,7 +27,7 @@ let package = Package(
             resources: [
               .copy("Geometry/icosphere.obj"),
               .copy("Geometry/icosphere.mtl"),
-              .process("Shaders/Metal/")
+              .copy("Shaders/")
             ]),
         .testTarget(
             name: "SenetTests",
