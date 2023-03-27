@@ -31,7 +31,8 @@ let package = Package(
               .process("Shaders/PBR.metal"),
               .process("Shaders/Deferred.metal"),
               .process("Geometry/icosphere.obj"),
-              .process("Geometry/icosphere.mtl")
+              .process("Geometry/icosphere.mtl"),
+              .copy("Shaders/Metal/")
             ]),
         .testTarget(
             name: "SenetTests",

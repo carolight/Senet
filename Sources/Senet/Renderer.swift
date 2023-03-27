@@ -57,9 +57,13 @@ public class Renderer: NSObject {
     metalView.device = device
 
     // create the shader function library
-//    let library = device.makeDefaultLibrary()
-    guard let library = try? device.makeDefaultLibrary(bundle: Bundle.module)
-          else { fatalError("Unable to create default library") }
+    guard let url: URL = Bundle.module.url(
+      forResource: "default",
+      withExtension: "metallib",
+      subdirectory: "Metal"),
+          let library = try? device.makeLibrary(URL: url)
+    else { fatalError() }
+
     Self.library = library
 
     shadowRenderPass = ShadowRenderPass(view: metalView)
