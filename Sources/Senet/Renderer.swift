@@ -57,14 +57,19 @@ public class Renderer: NSObject {
     metalView.device = device
 
     // create the shader function library
-    guard let url: URL = Bundle.module.url(
-      forResource: "default",
-      withExtension: "metallib",
-      subdirectory: "Metal"),
-          let library = try? device.makeLibrary(URL: url)
-    else { fatalError() }
+//    guard let url: URL = Bundle.module.url(
+//      forResource: "default",
+//      withExtension: "metallib",
+//      subdirectory: "Metal"),
+//          let library = try? device.makeLibrary(URL: url)
+//    else { fatalError() }
 
-    Self.library = library
+    do {
+      let library = try device.makeDefaultLibrary(bundle: .main) 
+      Self.library = library
+    } catch {
+      fatalError("Failed to create library")
+    }
 
     shadowRenderPass = ShadowRenderPass(view: metalView)
     let tiledSupported = device.supportsFamily(.apple3)
