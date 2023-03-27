@@ -25,8 +25,8 @@ let package = Package(
             name: "Senet",
             dependencies: [],
             resources: [
-              .process("Geometry/icosphere.obj"),
-              .process("Geometry/icosphere.mtl"),
+              .copy("Geometry/icosphere.obj"),
+              .copy("Geometry/icosphere.mtl"),
               .copy("Shaders/Metal/")
             ]),
         .testTarget(
