@@ -64,12 +64,14 @@ public class Renderer: NSObject {
 //          let library = try? device.makeLibrary(URL: url)
 //    else { fatalError() }
 
-    do {
-      let library = try device.makeDefaultLibrary(bundle: .main) 
-      Self.library = library
-    } catch {
-      fatalError("Failed to create library")
-    }
+
+//    do {
+//      let library = try device.makeDefaultLibrary(bundle: .main)
+//      Self.library = library
+//    } catch {
+//      fatalError("Failed to create library")
+//    }
+    Self.library = device.makeDefaultLibrary()
 
     shadowRenderPass = ShadowRenderPass(view: metalView)
     let tiledSupported = device.supportsFamily(.apple3)
