@@ -57,12 +57,22 @@ public class Renderer: NSObject {
     metalView.device = device
 
     // create the shader function library
+#if os(macOS)
     guard let url: URL = Bundle.module.url(
-      forResource: "default",
+      forResource: "macos",
       withExtension: "metallib",
       subdirectory: "Shaders"),
           let library = try? device.makeLibrary(URL: url)
     else { fatalError() }
+#else
+    guard let url: URL = Bundle.module.url(
+      forResource: "iphoneos",
+      withExtension: "metallib",
+      subdirectory: "Shaders"),
+          let library = try? device.makeLibrary(URL: url)
+    else { fatalError() }
+#endif
+
 
 
 //    do {
